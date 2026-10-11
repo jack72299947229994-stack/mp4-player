@@ -1,0 +1,1581 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>本地播放器</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #0e1014;
+    --panel: #161920;
+    --panel2: #1d2129;
+    --line: #2a2f3a;
+    --text: #e7e9ee;
+    --muted: #8a93a3;
+    --accent: #4f8cff;
+    --accent2: #3b6fd6;
+    --danger: #ff5a5f;
+    --warn: #ffd166;
+  }
+  html, body { height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans TC", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    font-size: 14px;
+    overflow: hidden;
+    user-select: none;
+  }
+  button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+  svg { width: 20px; height: 20px; fill: currentColor; display: block; flex-shrink: 0; }
+
+  #app { display: flex; flex-direction: column; height: 100vh; }
+
+  /* ---------- Top bar ---------- */
+  .topbar {
+    height: 52px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+    flex-shrink: 0;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; min-width: 0; }
+  .brand .logo {
+    width: 26px; height: 26px; border-radius: 7px;
+    background: var(--accent);
+    display: grid; place-items: center; flex-shrink: 0;
+  }
+  .brand .logo svg { width: 16px; height: 16px; color: #fff; }
+  .now-title {
+    color: var(--muted); font-weight: 400;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 45vw;
+  }
+  .now-title:not(:empty)::before { content: "·"; margin-right: 10px; }
+  .top-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 34px; padding: 0 12px;
+    border-radius: 8px;
+    color: var(--text);
+    background: var(--panel2);
+    border: 1px solid var(--line);
+    transition: .15s;
+    white-space: nowrap;
+  }
+  .btn:hover { border-color: #3a4150; background: #232833; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: var(--accent2); }
+  .btn.active { border-color: var(--accent); color: var(--accent); }
+  .btn svg { width: 18px; height: 18px; }
+
+  /* ---------- Layout ---------- */
+  .main { flex: 1; display: flex; min-height: 0; position: relative; }
+  .player { flex: 1; display: flex; padding: 16px; min-width: 0; }
+
+  .stage {
+    position: relative;
+    flex: 1;
+    background: #000;
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .stage:fullscreen { border-radius: 0; }
+  .stage.idle { cursor: none; }
+  video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+  video::cue { background: rgba(0, 0, 0, .6); font-size: 1.05em; }
+  .stage.no-video video,
+  .stage.no-video .controls,
+  .stage.no-video .badges { display: none; }
+
+  /* ---------- Empty state ---------- */
+  .empty {
+    position: absolute; inset: 0;
+    display: none; align-items: center; justify-content: center;
+    background: var(--panel);
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .stage.no-video .empty { display: flex; }
+  .empty .drop {
+    width: min(460px, 84%);
+    padding: 48px 24px;
+    border: 2px dashed var(--line);
+    border-radius: 16px;
+    text-align: center;
+    line-height: 1.7;
+    transition: .2s;
+  }
+  .empty:hover .drop { border-color: var(--accent); }
+  .empty .icon { width: 56px; height: 56px; margin: 0 auto 12px; color: var(--accent); }
+  .empty .icon svg { width: 56px; height: 56px; }
+  .empty h3 { color: var(--text); font-size: 17px; font-weight: 600; margin-bottom: 4px; }
+  .empty .small { font-size: 12px; margin-top: 8px; }
+  .kbd-inline {
+    display: inline-block; padding: 0 6px; margin: 0 2px;
+    border: 1px solid var(--line); border-radius: 4px;
+    font-family: ui-monospace, Consolas, monospace; font-size: 11px;
+    color: var(--text); background: var(--bg);
+  }
+
+  /* ---------- Controls ---------- */
+  .controls {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    padding: 36px 14px 10px;
+    background: linear-gradient(transparent, rgba(0, 0, 0, .78));
+    transition: opacity .25s;
+  }
+  .stage.idle .controls, .stage.idle .badges { opacity: 0; pointer-events: none; }
+
+  .progress {
+    position: relative;
+    height: 16px;
+    display: flex; align-items: center;
+    cursor: pointer;
+    margin-bottom: 4px;
+    touch-action: none;
+  }
+  .bar {
+    position: relative; width: 100%; height: 4px;
+    background: rgba(255, 255, 255, .2);
+    border-radius: 2px;
+    transition: height .15s;
+  }
+  .progress:hover .bar, .progress.dragging .bar { height: 6px; }
+  .bar > div { position: absolute; top: 0; bottom: 0; left: 0; border-radius: 2px; }
+  .buffered { background: rgba(255, 255, 255, .3); }
+  .ab-range { background: rgba(255, 209, 102, .45); display: none; }
+  .played { background: var(--accent); }
+  .thumb {
+    position: absolute; top: 50%;
+    width: 13px; height: 13px; border-radius: 50%;
+    background: #fff;
+    transform: translate(-50%, -50%) scale(0);
+    transition: transform .15s;
+    pointer-events: none;
+  }
+  .progress:hover .thumb, .progress.dragging .thumb { transform: translate(-50%, -50%) scale(1); }
+  .hover-time {
+    position: absolute; bottom: 20px;
+    padding: 3px 8px;
+    background: rgba(0, 0, 0, .85);
+    border-radius: 5px;
+    font-size: 12px;
+    transform: translateX(-50%);
+    display: none;
+    white-space: nowrap;
+    pointer-events: none;
+    font-variant-numeric: tabular-nums;
+  }
+  .progress:hover .hover-time { display: block; }
+
+  .ctrl-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .group { display: flex; align-items: center; gap: 2px; min-width: 0; }
+
+  .icon-btn {
+    width: 36px; height: 36px;
+    display: grid; place-items: center;
+    border-radius: 8px;
+    color: #fff; opacity: .9;
+    transition: .15s;
+    flex-shrink: 0;
+  }
+  .icon-btn:hover { background: rgba(255, 255, 255, .12); opacity: 1; }
+  .icon-btn.on { color: var(--accent); opacity: 1; }
+  .icon-btn.play svg { width: 26px; height: 26px; }
+  .icon-btn.muted-color { color: var(--muted); }
+
+  .volume { display: flex; align-items: center; }
+  .volume input { width: 0; opacity: 0; transition: .2s; }
+  .volume:hover input { width: 80px; opacity: 1; margin: 0 8px 0 2px; }
+
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    height: 4px; border-radius: 2px;
+    background: linear-gradient(to right, #fff var(--p, 100%), rgba(255, 255, 255, .25) var(--p, 100%));
+    cursor: pointer; outline: none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px; height: 12px; border-radius: 50%; background: #fff;
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 12px; height: 12px; border: 0; border-radius: 50%; background: #fff;
+  }
+
+  .time {
+    font-size: 13px; margin-left: 8px;
+    font-variant-numeric: tabular-nums;
+    color: #ddd; cursor: pointer; white-space: nowrap;
+  }
+
+  .speed {
+    display: flex; align-items: center;
+    background: rgba(255, 255, 255, .08);
+    border-radius: 8px; height: 30px; margin-right: 6px;
+  }
+  .speed button { width: 26px; height: 30px; color: #fff; font-size: 16px; }
+  .speed button:hover { color: var(--accent); }
+  .speed .val { width: auto; min-width: 54px; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .speed .val.changed { color: var(--accent); }
+
+  /* ---------- Overlays ---------- */
+  .osd {
+    position: absolute; top: 16px; left: 16px;
+    padding: 8px 14px;
+    background: rgba(0, 0, 0, .7);
+    border-radius: 8px;
+    font-size: 14px;
+    opacity: 0;
+    transition: opacity .2s;
+    pointer-events: none;
+    backdrop-filter: blur(6px);
+    font-variant-numeric: tabular-nums;
+    z-index: 5;
+  }
+  .osd.show { opacity: 1; }
+
+  .badges {
+    position: absolute; top: 16px; right: 16px;
+    display: flex; gap: 6px;
+    transition: opacity .25s;
+    pointer-events: none;
+  }
+  .badge {
+    padding: 4px 9px; font-size: 12px; border-radius: 6px;
+    background: rgba(0, 0, 0, .6); color: var(--warn);
+    display: none;
+    font-variant-numeric: tabular-nums;
+  }
+  .badge.show { display: block; }
+
+  .center-icon {
+    position: absolute; top: 50%; left: 50%;
+    width: 72px; height: 72px; margin: -36px 0 0 -36px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, .55);
+    display: grid; place-items: center;
+    opacity: 0; pointer-events: none;
+  }
+  .center-icon svg { width: 36px; height: 36px; color: #fff; }
+  .center-icon.pop { animation: pop .5s ease-out; }
+  @keyframes pop {
+    0% { opacity: 1; transform: scale(.8); }
+    100% { opacity: 0; transform: scale(1.35); }
+  }
+
+  .toast {
+    position: fixed; left: 50%; bottom: 28px;
+    transform: translateX(-50%) translateY(10px);
+    padding: 10px 16px;
+    background: #232833; border: 1px solid var(--line);
+    border-radius: 8px;
+    opacity: 0; pointer-events: none;
+    transition: .2s;
+    z-index: 100;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  .drag-overlay {
+    position: fixed; inset: 0;
+    background: rgba(79, 140, 255, .12);
+    border: 3px dashed var(--accent);
+    display: none; align-items: center; justify-content: center;
+    font-size: 20px; color: var(--text);
+    z-index: 90; pointer-events: none;
+  }
+  body.dragging .drag-overlay { display: flex; }
+
+  /* ---------- Playlist ---------- */
+  .playlist {
+    width: 300px;
+    border-left: 1px solid var(--line);
+    background: var(--panel);
+    display: flex; flex-direction: column;
+    flex-shrink: 0;
+  }
+  .playlist.hidden { display: none; }
+  .pl-head {
+    height: 48px;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--line);
+    font-weight: 600;
+  }
+  .pl-head span { color: var(--muted); font-size: 12px; font-weight: 400; }
+  .pl-list { flex: 1; overflow-y: auto; padding: 8px; }
+  .pl-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 10px; border-radius: 8px; cursor: pointer;
+  }
+  .pl-item:hover { background: var(--panel2); }
+  .pl-item.current { background: rgba(79, 140, 255, .14); }
+  .pl-item.current .pl-name, .pl-item.current .pl-idx { color: var(--accent); }
+  .pl-idx { width: 20px; text-align: center; color: var(--muted); font-size: 12px; flex-shrink: 0; }
+  .pl-info { flex: 1; min-width: 0; }
+  .pl-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pl-meta { font-size: 12px; color: var(--muted); margin-top: 2px; }
+  .pl-del {
+    opacity: 0; width: 26px; height: 26px; border-radius: 6px;
+    display: grid; place-items: center; color: var(--muted); flex-shrink: 0;
+  }
+  .pl-del svg { width: 16px; height: 16px; }
+  .pl-item:hover .pl-del { opacity: 1; }
+  .pl-del:hover { background: rgba(255, 90, 95, .15); color: var(--danger); }
+  .pl-empty { padding: 36px 10px; text-align: center; color: var(--muted); font-size: 13px; line-height: 1.7; }
+  .pl-foot { padding: 10px; border-top: 1px solid var(--line); display: flex; gap: 6px; }
+  .pl-foot .btn { flex: 1; justify-content: center; }
+
+  /* ---------- Modal ---------- */
+  .modal-bg {
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, .55);
+    display: none; align-items: center; justify-content: center;
+    z-index: 50;
+    backdrop-filter: blur(3px);
+  }
+  .modal-bg.show { display: flex; }
+  .modal {
+    width: min(640px, 94vw);
+    max-height: 86vh;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    display: flex; flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, .5);
+  }
+  .modal-head {
+    display: flex; align-items: center; gap: 16px;
+    padding: 12px 14px 12px 18px;
+    border-bottom: 1px solid var(--line);
+  }
+  .modal-head h2 { font-size: 16px; font-weight: 600; }
+  .tabs { display: flex; gap: 4px; background: var(--bg); padding: 3px; border-radius: 8px; }
+  .tabs button { height: 30px; padding: 0 14px; border-radius: 6px; color: var(--muted); }
+  .tabs button.active { background: var(--panel2); color: var(--text); }
+  .modal-body { padding: 4px 18px 14px; overflow-y: auto; flex: 1; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  .section-title {
+    font-size: 12px; color: var(--muted);
+    margin: 18px 0 4px; letter-spacing: .05em;
+  }
+  .key-row, .field {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 8px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .key-row .sub { color: var(--muted); font-size: 12px; margin-left: 8px; }
+  .kbd {
+    min-width: 132px; height: 32px; padding: 0 12px;
+    border-radius: 7px;
+    background: var(--bg); border: 1px solid var(--line);
+    font-family: ui-monospace, Consolas, monospace; font-size: 13px;
+  }
+  .kbd:hover { border-color: #3a4150; }
+  .kbd.empty { color: var(--muted); }
+  .kbd.capturing { border-color: var(--accent); color: var(--accent); animation: blink 1s infinite; }
+  @keyframes blink { 50% { opacity: .55; } }
+
+  .field input[type=number] {
+    width: 110px; height: 32px; padding: 0 10px;
+    border-radius: 7px;
+    background: var(--bg); border: 1px solid var(--line);
+    color: var(--text); font: inherit; text-align: right;
+  }
+  .field input[type=number]:focus { outline: none; border-color: var(--accent); }
+  .unit { color: var(--muted); font-size: 12px; margin-left: 8px; width: 26px; display: inline-block; }
+
+  .switch { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
+  .switch input { display: none; }
+  .switch span {
+    position: absolute; inset: 0;
+    background: var(--line); border-radius: 11px;
+    transition: .2s; cursor: pointer;
+  }
+  .switch span::after {
+    content: ""; position: absolute; top: 3px; left: 3px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: #fff; transition: .2s;
+  }
+  .switch input:checked + span { background: var(--accent); }
+  .switch input:checked + span::after { transform: translateX(18px); }
+
+  .hint { color: var(--muted); font-size: 12px; margin-top: 14px; line-height: 1.7; }
+  .modal-foot { display: flex; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); }
+  .spacer { flex: 1; }
+
+  @media (max-width: 720px) {
+    #btnPrev, #btnNext, #btnShot, #btnPip { display: none; }
+    .btn span { display: none; }
+    .playlist { position: absolute; right: 0; top: 0; bottom: 0; z-index: 20; }
+    .player { padding: 8px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo" data-icon="play"></div>
+      <span>本地播放器</span>
+      <span class="now-title" id="nowTitle"></span>
+    </div>
+    <div class="top-actions">
+      <button class="btn primary" id="btnOpen" data-icon="folder"><span>開啟檔案</span></button>
+      <button class="btn" id="btnPlaylist" data-icon="list"><span>播放清單</span></button>
+      <button class="btn" id="btnSettings" data-icon="gear"><span>設定</span></button>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="player">
+      <div class="stage no-video" id="stage">
+        <video id="video" playsinline></video>
+
+        <div class="empty" id="empty">
+          <div class="drop">
+            <div class="icon" data-icon="movie"></div>
+            <h3>拖曳影片到這裡，或點擊開啟</h3>
+            <div>支援 MP4 / WebM / MOV 等瀏覽器可播放的格式，可一次加入多個檔案</div>
+            <div class="small">字幕檔（.srt / .vtt）也可直接拖入　·　按 <span class="kbd-inline" id="hintKey">H</span> 查看與自訂快捷鍵</div>
+          </div>
+        </div>
+
+        <div class="osd" id="osd"></div>
+        <div class="badges">
+          <div class="badge" id="badgeAB"></div>
+          <div class="badge" id="badgeLoop">單曲循環</div>
+        </div>
+        <div class="center-icon" id="centerIcon"></div>
+
+        <div class="controls" id="controls">
+          <div class="progress" id="progress">
+            <div class="bar">
+              <div class="buffered" id="buffered"></div>
+              <div class="ab-range" id="abRange"></div>
+              <div class="played" id="played"></div>
+            </div>
+            <div class="thumb" id="thumb"></div>
+            <div class="hover-time" id="hoverTime">0:00</div>
+          </div>
+          <div class="ctrl-row">
+            <div class="group">
+              <button class="icon-btn play" id="btnPlay" data-icon="play"></button>
+              <button class="icon-btn" id="btnPrev" data-icon="prev"></button>
+              <button class="icon-btn" id="btnNext" data-icon="next"></button>
+              <button class="icon-btn" id="btnBack" data-icon="rewind"></button>
+              <button class="icon-btn" id="btnFwd" data-icon="forward"></button>
+              <div class="volume">
+                <button class="icon-btn" id="btnMute" data-icon="volume"></button>
+                <input type="range" id="volume" min="0" max="100" value="100">
+              </div>
+              <div class="time" id="time">0:00 / 0:00</div>
+            </div>
+            <div class="group">
+              <div class="speed">
+                <button id="btnSpeedDown">−</button>
+                <button class="val" id="btnSpeedVal">1.00x</button>
+                <button id="btnSpeedUp">+</button>
+              </div>
+              <button class="icon-btn" id="btnLoop" data-icon="loop"></button>
+              <button class="icon-btn" id="btnCC" data-icon="cc"></button>
+              <button class="icon-btn" id="btnShot" data-icon="camera"></button>
+              <button class="icon-btn" id="btnPip" data-icon="pip"></button>
+              <button class="icon-btn" id="btnFs" data-icon="fullscreen"></button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <aside class="playlist hidden" id="playlist">
+      <div class="pl-head">播放清單 <span id="plCount">0 部</span></div>
+      <div class="pl-list" id="plList"></div>
+      <div class="pl-foot">
+        <button class="btn" id="plAdd" data-icon="add"><span>新增</span></button>
+        <button class="btn" id="plClear" data-icon="trash"><span>清空</span></button>
+      </div>
+    </aside>
+  </main>
+</div>
+
+<div class="modal-bg" id="modal">
+  <div class="modal" role="dialog" aria-label="設定">
+    <div class="modal-head">
+      <h2>設定</h2>
+      <div class="tabs">
+        <button class="active" data-tab="tabKeys">快捷鍵</button>
+        <button data-tab="tabValues">數值與一般</button>
+      </div>
+      <span class="spacer"></span>
+      <button class="icon-btn muted-color" id="btnClose" data-icon="close"></button>
+    </div>
+    <div class="modal-body">
+      <div class="tab-panel active" id="tabKeys">
+        <p class="hint">點擊右側按鍵欄位後，按下新的按鍵（可搭配 Ctrl / Alt / Shift）。Esc 取消、Backspace 清除。若按鍵已被其他功能使用，會自動從該功能移除。</p>
+        <div id="keyList"></div>
+      </div>
+      <div class="tab-panel" id="tabValues">
+        <div id="valuesPanel"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="btnReset">恢復預設</button>
+      <span class="spacer"></span>
+      <button class="btn" id="btnImport">匯入</button>
+      <button class="btn" id="btnExport">匯出</button>
+      <button class="btn primary" id="btnDone">完成</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="drag-overlay">放開以加入影片 / 字幕</div>
+
+<input type="file" id="fileInput" accept="video/*,.mkv,.mov,.m4v,.srt,.vtt" multiple hidden>
+<input type="file" id="subInput" accept=".srt,.vtt" hidden>
+<input type="file" id="importInput" accept=".json,application/json" hidden>
+
+<script>
+(() => {
+  'use strict';
+
+  /* ================= Icons ================= */
+  const ICONS = {
+    play: 'M8 5v14l11-7z',
+    pause: 'M6 19h4V5H6v14zm8-14v14h4V5h-4z',
+    prev: 'M6 6h2v12H6zm3.5 6l8.5 6V6z',
+    next: 'M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z',
+    rewind: 'M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z',
+    forward: 'M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z',
+    volume: 'M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z',
+    mute: 'M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z',
+    loop: 'M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z',
+    cc: 'M19 4H5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-8 7H9.5v-.5h-2v3h2V13H11v1c0 .55-.45 1-1 1H7c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1zm7 0h-1.5v-.5h-2v3h2V13H18v1c0 .55-.45 1-1 1h-3c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v1z',
+    camera: 'M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4zM9 2L7.17 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2h-3.17L15 2H9zm3 15c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5z',
+    pip: 'M19 11h-8v6h8v-6zm4 8V4.98C23 3.88 22.1 3 21 3H3c-1.1 0-2 .88-2 1.98V19c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2zm-2 .02H3V4.97h18v14.05z',
+    fullscreen: 'M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z',
+    fsExit: 'M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z',
+    folder: 'M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z',
+    list: 'M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z',
+    gear: 'M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z',
+    close: 'M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
+    add: 'M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z',
+    trash: 'M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z',
+    movie: 'M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z'
+  };
+  const icon = name => `<svg viewBox="0 0 24 24"><path d="${ICONS[name]}"/></svg>`;
+  const setIcon = (el, name) => { el.innerHTML = icon(name); };
+  document.querySelectorAll('[data-icon]').forEach(el => el.insertAdjacentHTML('afterbegin', icon(el.dataset.icon)));
+
+  /* ================= DOM ================= */
+  const $ = s => document.querySelector(s);
+  const video = $('#video');
+  const stage = $('#stage');
+  const controls = $('#controls');
+  const progress = $('#progress');
+  const playedEl = $('#played');
+  const bufferedEl = $('#buffered');
+  const abRangeEl = $('#abRange');
+  const thumbEl = $('#thumb');
+  const hoverTimeEl = $('#hoverTime');
+  const timeEl = $('#time');
+  const osdEl = $('#osd');
+  const toastEl = $('#toast');
+  const centerIcon = $('#centerIcon');
+  const volumeEl = $('#volume');
+  const playlistEl = $('#playlist');
+  const plList = $('#plList');
+  const plCount = $('#plCount');
+  const nowTitle = $('#nowTitle');
+  const modal = $('#modal');
+  const keyList = $('#keyList');
+  const valuesPanel = $('#valuesPanel');
+  const fileInput = $('#fileInput');
+  const subInput = $('#subInput');
+  const importInput = $('#importInput');
+  const badgeAB = $('#badgeAB');
+  const badgeLoop = $('#badgeLoop');
+  const btn = id => document.getElementById(id);
+
+  /* ================= Utils ================= */
+  const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+  const pad = n => String(n).padStart(2, '0');
+  function fmt(s, withMs) {
+    if (!isFinite(s) || s < 0) s = 0;
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = Math.floor(s % 60);
+    let out = h ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
+    if (withMs) out += '.' + String(Math.floor((s % 1) * 1000)).padStart(3, '0');
+    return out;
+  }
+  const fmtSize = b => b >= 1073741824 ? (b / 1073741824).toFixed(2) + ' GB' : (b / 1048576).toFixed(1) + ' MB';
+  const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  /* ================= Actions ================= */
+  const ACTIONS = [
+    { id: 'togglePlay', group: '播放', label: '播放 / 暫停', key: 'Space', run: () => togglePlay() },
+    { id: 'prev', group: '播放', label: '上一部', key: 'PageUp', run: () => playPrev() },
+    { id: 'next', group: '播放', label: '下一部', key: 'PageDown', run: () => playNext(false) },
+    { id: 'loop', group: '播放', label: '單曲循環', key: 'L', run: () => toggleLoop() },
+    { id: 'abLoop', group: '播放', label: 'A-B 區段循環', key: 'B', run: () => abLoop(), sub: () => '設 A → 設 B → 取消' },
+
+    { id: 'seekBack', group: '跳轉', label: '倒退', key: 'ArrowLeft', repeat: true, sub: () => `${S.values.seekStep} 秒`, run: () => seek(-S.values.seekStep) },
+    { id: 'seekForward', group: '跳轉', label: '前進', key: 'ArrowRight', repeat: true, sub: () => `${S.values.seekStep} 秒`, run: () => seek(S.values.seekStep) },
+    { id: 'seekBackLong', group: '跳轉', label: '大幅倒退', key: 'Shift+ArrowLeft', repeat: true, sub: () => `${S.values.seekLongStep} 秒`, run: () => seek(-S.values.seekLongStep) },
+    { id: 'seekForwardLong', group: '跳轉', label: '大幅前進', key: 'Shift+ArrowRight', repeat: true, sub: () => `${S.values.seekLongStep} 秒`, run: () => seek(S.values.seekLongStep) },
+    { id: 'frameBack', group: '跳轉', label: '上一格', key: ',', repeat: true, sub: () => `1/${S.values.fps} 秒`, run: () => stepFrame(-1) },
+    { id: 'frameForward', group: '跳轉', label: '下一格', key: '.', repeat: true, sub: () => `1/${S.values.fps} 秒`, run: () => stepFrame(1) },
+
+    { id: 'speedUp', group: '速度', label: '加快速度', key: 'ArrowUp', repeat: true, sub: () => `+${S.values.speedStep}x`, run: () => setSpeed(video.playbackRate + S.values.speedStep) },
+    { id: 'speedDown', group: '速度', label: '減慢速度', key: 'ArrowDown', repeat: true, sub: () => `−${S.values.speedStep}x`, run: () => setSpeed(video.playbackRate - S.values.speedStep) },
+    { id: 'speedReset', group: '速度', label: '重設速度', key: 'R', sub: () => '1.00x', run: () => setSpeed(1) },
+
+    { id: 'volumeUp', group: '音量', label: '音量增加', key: 'Shift+ArrowUp', repeat: true, sub: () => `${S.values.volumeStep}%`, run: () => changeVolume(S.values.volumeStep) },
+    { id: 'volumeDown', group: '音量', label: '音量減少', key: 'Shift+ArrowDown', repeat: true, sub: () => `${S.values.volumeStep}%`, run: () => changeVolume(-S.values.volumeStep) },
+    { id: 'mute', group: '音量', label: '靜音', key: 'M', run: () => toggleMute() },
+
+    { id: 'fullscreen', group: '畫面', label: '全螢幕', key: 'F', run: () => toggleFullscreen() },
+    { id: 'pip', group: '畫面', label: '子母畫面', key: 'P', run: () => togglePip() },
+    { id: 'screenshot', group: '畫面', label: '截圖', key: 'S', sub: () => 'PNG', run: () => screenshot() },
+    { id: 'subtitle', group: '畫面', label: '字幕開關', key: 'C', sub: () => '未載入時開啟字幕檔', run: () => toggleSubtitle() },
+
+    { id: 'openFile', group: '其他', label: '開啟檔案', key: 'O', global: true, run: () => fileInput.click() },
+    { id: 'playlist', group: '其他', label: '播放清單', key: 'Q', global: true, run: () => togglePlaylist() },
+    { id: 'settings', group: '其他', label: '設定與快捷鍵', key: 'H', global: true, run: () => openSettings() }
+  ];
+
+  const VALUE_FIELDS = [
+    { k: 'seekStep', label: '前進 / 倒退秒數', unit: '秒', min: 0.5, max: 3600, step: 0.5 },
+    { k: 'seekLongStep', label: '大幅前進 / 倒退秒數', unit: '秒', min: 0.5, max: 3600, step: 0.5 },
+    { k: 'speedStep', label: '每次速度調整幅度', unit: 'x', min: 0.01, max: 4, step: 0.01 },
+    { k: 'minSpeed', label: '最低速度', unit: 'x', min: 0.1, max: 16, step: 0.05 },
+    { k: 'maxSpeed', label: '最高速度', unit: 'x', min: 0.5, max: 16, step: 0.25 },
+    { k: 'volumeStep', label: '每次音量調整幅度', unit: '%', min: 1, max: 100, step: 1 },
+    { k: 'fps', label: '逐格播放影格率', unit: 'fps', min: 1, max: 240, step: 'any' }
+  ];
+
+  const TOGGLES = [
+    { k: 'rememberPosition', label: '記住每部影片的播放進度' },
+    { k: 'rememberSpeed', label: '切換影片時保留目前速度' },
+    { k: 'autoNext', label: '播放結束自動播放下一部' },
+    { k: 'loopPlaylist', label: '播放清單循環' },
+    { k: 'numberJump', label: '數字鍵 0–9 跳至影片 0%–90%' },
+    { k: 'wheelVolume', label: '在畫面上滾動滑鼠滾輪調整音量' }
+  ];
+
+  /* ================= Settings ================= */
+  const SETTINGS_KEY = 'lp_settings_v1';
+  const POS_KEY = 'lp_positions_v1';
+  const VOL_KEY = 'lp_volume';
+
+  function defaults() {
+    const keys = {};
+    ACTIONS.forEach(a => { keys[a.id] = a.key; });
+    return {
+      keys,
+      values: { seekStep: 10, seekLongStep: 30, speedStep: 0.1, minSpeed: 0.1, maxSpeed: 16, volumeStep: 5, fps: 30 },
+      general: { rememberPosition: true, rememberSpeed: false, autoNext: true, loopPlaylist: false, numberJump: true, wheelVolume: true }
+    };
+  }
+  function merge(d, s) {
+    for (const g of ['keys', 'values', 'general']) {
+      if (s && s[g] && typeof s[g] === 'object') {
+        for (const k in d[g]) if (k in s[g]) d[g][k] = s[g][k];
+      }
+    }
+    return d;
+  }
+  function loadSettings() {
+    const d = defaults();
+    try {
+      const s = JSON.parse(localStorage.getItem(SETTINGS_KEY) || 'null');
+      if (s) merge(d, s);
+    } catch (e) { /* ignore */ }
+    return d;
+  }
+  let S = loadSettings();
+  let keyMap = {};
+
+  function saveSettings() {
+    try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(S)); } catch (e) { /* ignore */ }
+    rebuildKeyMap();
+    updateTitles();
+  }
+  function rebuildKeyMap() {
+    keyMap = {};
+    ACTIONS.forEach(a => { if (S.keys[a.id]) keyMap[S.keys[a.id]] = a; });
+  }
+
+  /* ================= Key handling ================= */
+  const KEY_NAMES = {
+    ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→',
+    Space: '空白鍵', Escape: 'Esc', PageUp: 'PgUp', PageDown: 'PgDn',
+    Enter: 'Enter', Backspace: 'Backspace', Delete: 'Del'
+  };
+  const displayKey = combo => combo.split('+').map(p => KEY_NAMES[p] || p).join(' + ');
+
+  function eventToCombo(e) {
+    const k = e.key;
+    if (['Control', 'Shift', 'Alt', 'Meta', 'Dead', 'Unidentified'].includes(k)) return null;
+    let key = k;
+    if (k === 'Process') {
+      // 輸入法啟用時，由實體鍵位推算
+      if (/^Key[A-Z]$/.test(e.code)) key = e.code.slice(3);
+      else if (/^Digit\d$/.test(e.code)) key = e.code.slice(5);
+      else if (e.code === 'Space') key = 'Space';
+      else return null;
+    } else if (k === ' ') {
+      key = 'Space';
+    } else if (k.length === 1) {
+      key = k.toUpperCase();
+    }
+    const mods = [];
+    if (e.ctrlKey) mods.push('Ctrl');
+    if (e.altKey) mods.push('Alt');
+    if (e.shiftKey) mods.push('Shift');
+    if (e.metaKey) mods.push('Meta');
+    return [...mods, key].join('+');
+  }
+
+  let capturing = null;
+
+  document.addEventListener('keydown', e => {
+    if (capturing) { handleCapture(e); return; }
+
+    if (modal.classList.contains('show')) {
+      if (e.key === 'Escape') closeSettings();
+      return;
+    }
+
+    const t = e.target;
+    if (t && t.matches && t.matches('input[type=text], input[type=number], textarea, select')) return;
+
+    const combo = eventToCombo(e);
+    if (!combo) return;
+
+    const action = keyMap[combo];
+    if (action) {
+      e.preventDefault();
+      runAction(action, e);
+      return;
+    }
+
+    if (S.general.numberJump && /^Digit\d$/.test(e.code) && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey && hasVideo() && isFinite(video.duration)) {
+      e.preventDefault();
+      const pct = Number(e.code.slice(5)) * 10;
+      video.currentTime = video.duration * pct / 100;
+      osd(`跳至 ${pct}%　${fmt(video.currentTime)}`);
+      wake();
+    }
+  }, true);
+
+  function runAction(a, e) {
+    if (e && e.repeat && !a.repeat) return;
+    if (!a.global && !hasVideo()) return;
+    a.run();
+    if (!a.global) wake();
+  }
+
+  function handleCapture(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === 'Escape') { stopCapture(); return; }
+    if (e.key === 'Backspace' || e.key === 'Delete') {
+      S.keys[capturing] = '';
+    } else {
+      const combo = eventToCombo(e);
+      if (!combo) return;
+      const other = ACTIONS.find(a => a.id !== capturing && S.keys[a.id] === combo);
+      if (other) {
+        S.keys[other.id] = '';
+        notify(`已將 ${displayKey(combo)} 從「${other.label}」移除`);
+      }
+      S.keys[capturing] = combo;
+    }
+    saveSettings();
+    stopCapture();
+  }
+  function startCapture(id) { capturing = id; renderKeyList(); }
+  function stopCapture() { capturing = null; renderKeyList(); }
+
+  /* ================= Playlist state ================= */
+  let list = [];
+  let current = -1;
+  let ready = false;
+  let uid = 0;
+  let positions = {};
+  try { positions = JSON.parse(localStorage.getItem(POS_KEY) || '{}'); } catch (e) { positions = {}; }
+  const posKey = it => it.name + '|' + it.size;
+
+  const hasVideo = () => current >= 0 && !!video.currentSrc;
+  const isVideoFile = f => (f.type && f.type.startsWith('video/')) || /\.(mp4|m4v|webm|mkv|mov|ogv|ogg)$/i.test(f.name);
+  const isSubFile = f => /\.(srt|vtt)$/i.test(f.name);
+
+  function addFiles(files) {
+    const arr = Array.from(files);
+    const vids = arr.filter(isVideoFile);
+    const subs = arr.filter(isSubFile);
+    const firstNew = list.length;
+
+    vids.forEach(f => {
+      const item = { id: ++uid, file: f, name: f.name, size: f.size, url: URL.createObjectURL(f), duration: null };
+      list.push(item);
+      probeDuration(item);
+    });
+
+    if (vids.length) {
+      if (current < 0) playIndex(firstNew);
+      if (list.length > 1 && vids.length > 1 && playlistEl.classList.contains('hidden')) togglePlaylist();
+      if (current >= 0 && firstNew > 0) notify(`已加入 ${vids.length} 部影片`);
+    }
+    if (subs.length) loadSubtitle(subs[0]);
+    if (!vids.length && !subs.length && arr.length) notify('不支援的檔案類型');
+    renderPlaylist();
+  }
+
+  function probeDuration(item) {
+    const p = document.createElement('video');
+    p.preload = 'metadata';
+    p.muted = true;
+    p.onloadedmetadata = () => {
+      item.duration = p.duration;
+      p.removeAttribute('src');
+      p.load();
+      renderPlaylist();
+    };
+    p.onerror = () => { p.removeAttribute('src'); };
+    p.src = item.url;
+  }
+
+  function playIndex(i) {
+    if (i < 0 || i >= list.length) return;
+    savePosition();
+    ready = false;
+    current = i;
+    const it = list[i];
+    clearSubtitle();
+    ab.a = ab.b = null;
+    const keepRate = S.general.rememberSpeed ? video.playbackRate : 1;
+    video.defaultPlaybackRate = keepRate;
+    video.src = it.url;
+    stage.classList.remove('no-video');
+    nowTitle.textContent = it.name;
+    document.title = it.name + ' - 本地播放器';
+    video.play().catch(() => {});
+    updateBadges();
+    renderPlaylist();
+  }
+
+  function playNext(auto) {
+    if (current < list.length - 1) playIndex(current + 1);
+    else if (S.general.loopPlaylist && list.length) playIndex(0);
+    else if (!auto) osd('已是最後一部');
+  }
+  function playPrev() {
+    if (current > 0) playIndex(current - 1);
+    else if (S.general.loopPlaylist && list.length) playIndex(list.length - 1);
+    else osd('已是第一部');
+  }
+
+  function removeItem(i) {
+    const it = list[i];
+    if (i === current) savePosition();
+    URL.revokeObjectURL(it.url);
+    list.splice(i, 1);
+    if (i === current) {
+      current = -1;
+      if (list.length) playIndex(Math.min(i, list.length - 1));
+      else resetPlayer();
+    } else if (i < current) {
+      current--;
+    }
+    renderPlaylist();
+  }
+
+  function clearAll() {
+    savePosition();
+    list.forEach(it => URL.revokeObjectURL(it.url));
+    list = [];
+    resetPlayer();
+    renderPlaylist();
+  }
+
+  function resetPlayer() {
+    current = -1;
+    ready = false;
+    video.pause();
+    video.removeAttribute('src');
+    video.load();
+    clearSubtitle();
+    ab.a = ab.b = null;
+    updateBadges();
+    stage.classList.add('no-video');
+    stage.classList.remove('idle');
+    nowTitle.textContent = '';
+    document.title = '本地播放器';
+  }
+
+  function renderPlaylist() {
+    plCount.textContent = `${list.length} 部`;
+    if (!list.length) {
+      plList.innerHTML = '<div class="pl-empty">清單是空的<br>拖曳影片到視窗，或點擊下方「新增」</div>';
+      return;
+    }
+    plList.innerHTML = list.map((it, i) => {
+      const saved = positions[posKey(it)];
+      const meta = [
+        it.duration ? fmt(it.duration) : null,
+        fmtSize(it.size),
+        saved && S.general.rememberPosition ? `看到 ${fmt(saved)}` : null
+      ].filter(Boolean).join(' · ');
+      return `
+        <div class="pl-item${i === current ? ' current' : ''}" data-i="${i}">
+          <div class="pl-idx">${i === current ? '▶' : i + 1}</div>
+          <div class="pl-info">
+            <div class="pl-name" title="${esc(it.name)}">${esc(it.name)}</div>
+            <div class="pl-meta">${meta}</div>
+          </div>
+          <button class="pl-del" data-del="${i}" title="移除">${icon('close')}</button>
+        </div>`;
+    }).join('');
+  }
+
+  plList.addEventListener('click', e => {
+    const del = e.target.closest('[data-del]');
+    if (del) { e.stopPropagation(); removeItem(Number(del.dataset.del)); return; }
+    const item = e.target.closest('.pl-item');
+    if (item) playIndex(Number(item.dataset.i));
+  });
+
+  function togglePlaylist() {
+    const hidden = playlistEl.classList.toggle('hidden');
+    btn('btnPlaylist').classList.toggle('active', !hidden);
+  }
+
+  /* ================= Position memory ================= */
+  let lastSave = 0;
+  function savePosition() {
+    if (current < 0 || !ready || !S.general.rememberPosition) return;
+    const d = video.duration;
+    const t = video.currentTime;
+    if (!isFinite(d) || d <= 0) return;
+    const k = posKey(list[current]);
+    if (t < 5 || t > d - 5) delete positions[k];
+    else positions[k] = Math.floor(t);
+    const keys = Object.keys(positions);
+    if (keys.length > 300) delete positions[keys[0]];
+    try { localStorage.setItem(POS_KEY, JSON.stringify(positions)); } catch (e) { /* ignore */ }
+  }
+
+  /* ================= Playback functions ================= */
+  function togglePlay() {
+    if (video.paused || video.ended) {
+      video.play().catch(() => {});
+      flashCenter('play');
+    } else {
+      video.pause();
+      flashCenter('pause');
+    }
+  }
+
+  function seek(delta) {
+    const d = video.duration;
+    if (!isFinite(d)) return;
+    const t = clamp(video.currentTime + delta, 0, d);
+    video.currentTime = t;
+    osd(`${delta > 0 ? '前進' : '倒退'} ${Math.abs(delta)} 秒　${fmt(t)} / ${fmt(d)}`);
+    updateProgress();
+  }
+
+  function setSpeed(v, silent) {
+    const { minSpeed, maxSpeed } = S.values;
+    v = clamp(Math.round(v * 100) / 100, minSpeed, maxSpeed);
+    video.playbackRate = v;
+    if (!silent) osd(`速度 ${v.toFixed(2)}x`);
+  }
+
+  function changeVolume(d) {
+    video.muted = false;
+    video.volume = clamp(Math.round(video.volume * 100 + d), 0, 100) / 100;
+    osd(`音量 ${Math.round(video.volume * 100)}%`);
+  }
+
+  function toggleMute() {
+    if (video.muted || video.volume === 0) {
+      video.muted = false;
+      if (video.volume === 0) video.volume = 0.5;
+      osd(`音量 ${Math.round(video.volume * 100)}%`);
+    } else {
+      video.muted = true;
+      osd('靜音');
+    }
+  }
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) {
+      document.exitFullscreen();
+    } else if (stage.requestFullscreen) {
+      stage.requestFullscreen().catch(() => osd('無法進入全螢幕'));
+    }
+  }
+
+  async function togglePip() {
+    try {
+      if (document.pictureInPictureElement) await document.exitPictureInPicture();
+      else if (document.pictureInPictureEnabled) await video.requestPictureInPicture();
+      else osd('此瀏覽器不支援子母畫面');
+    } catch (e) {
+      osd('無法開啟子母畫面');
+    }
+  }
+
+  function stepFrame(dir) {
+    const d = video.duration;
+    if (!isFinite(d)) return;
+    video.pause();
+    const t = clamp(video.currentTime + dir / S.values.fps, 0, d);
+    video.currentTime = t;
+    osd(`${dir > 0 ? '下一格' : '上一格'}　${fmt(t, true)}`);
+  }
+
+  function screenshot() {
+    if (!video.videoWidth) { osd('目前沒有畫面可截圖'); return; }
+    const c = document.createElement('canvas');
+    c.width = video.videoWidth;
+    c.height = video.videoHeight;
+    c.getContext('2d').drawImage(video, 0, 0);
+    const base = (list[current] ? list[current].name : 'screenshot').replace(/\.[^.]+$/, '');
+    const stamp = fmt(video.currentTime, true).replace(/[:.]/g, '-');
+    c.toBlob(b => {
+      if (!b) return;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(b);
+      a.download = `${base}_${stamp}.png`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    }, 'image/png');
+    osd('已儲存截圖');
+  }
+
+  function toggleLoop() {
+    video.loop = !video.loop;
+    osd(video.loop ? '單曲循環：開' : '單曲循環：關');
+    updateBadges();
+  }
+
+  const ab = { a: null, b: null };
+  function abLoop() {
+    const t = video.currentTime;
+    if (ab.a === null) {
+      ab.a = t;
+      osd(`A 點：${fmt(t)}　再按一次設定 B 點`);
+    } else if (ab.b === null) {
+      if (t <= ab.a + 0.2) { osd('B 點需在 A 點之後'); return; }
+      ab.b = t;
+      video.currentTime = ab.a;
+      osd(`A-B 循環：${fmt(ab.a)} → ${fmt(ab.b)}`);
+    } else {
+      ab.a = ab.b = null;
+      osd('已取消 A-B 循環');
+    }
+    updateBadges();
+  }
+
+  function updateBadges() {
+    btn('btnLoop').classList.toggle('on', video.loop);
+    badgeLoop.classList.toggle('show', video.loop);
+
+    const d = video.duration;
+    if (ab.a !== null) {
+      badgeAB.textContent = ab.b !== null ? `A-B ${fmt(ab.a)} → ${fmt(ab.b)}` : `A ${fmt(ab.a)} → ?`;
+      badgeAB.classList.add('show');
+      if (isFinite(d) && d > 0) {
+        abRangeEl.style.display = 'block';
+        abRangeEl.style.left = (ab.a / d * 100) + '%';
+        abRangeEl.style.width = ab.b !== null ? ((ab.b - ab.a) / d * 100) + '%' : '2px';
+      }
+    } else {
+      badgeAB.classList.remove('show');
+      abRangeEl.style.display = 'none';
+    }
+  }
+
+  /* ================= Subtitles ================= */
+  let subUrl = null;
+  const srtToVtt = t => 'WEBVTT\n\n' + t.replace(/^\uFEFF/, '').replace(/\r+/g, '').replace(/(\d{2}:\d{2}:\d{2}),(\d{3})/g, '$1.$2');
+
+  async function loadSubtitle(file) {
+    if (current < 0) { notify('請先開啟影片再載入字幕'); return; }
+    let text = await file.text();
+    if (/\.srt$/i.test(file.name)) text = srtToVtt(text);
+    clearSubtitle();
+    subUrl = URL.createObjectURL(new Blob([text], { type: 'text/vtt' }));
+    const tr = document.createElement('track');
+    tr.kind = 'subtitles';
+    tr.label = file.name;
+    tr.srclang = 'zh';
+    tr.src = subUrl;
+    tr.default = true;
+    video.appendChild(tr);
+    tr.track.mode = 'showing';
+    tr.addEventListener('load', () => { tr.track.mode = 'showing'; });
+    btn('btnCC').classList.add('on');
+    osd('已載入字幕：' + file.name);
+  }
+
+  function clearSubtitle() {
+    video.querySelectorAll('track').forEach(t => t.remove());
+    if (subUrl) URL.revokeObjectURL(subUrl);
+    subUrl = null;
+    btn('btnCC').classList.remove('on');
+  }
+
+  function toggleSubtitle() {
+    const t = video.textTracks[0];
+    if (!t) { subInput.click(); return; }
+    t.mode = t.mode === 'showing' ? 'hidden' : 'showing';
+    const on = t.mode === 'showing';
+    btn('btnCC').classList.toggle('on', on);
+    osd(on ? '字幕：開' : '字幕：關');
+  }
+
+  /* ================= UI feedback ================= */
+  let osdTimer;
+  function osd(msg) {
+    osdEl.textContent = msg;
+    osdEl.classList.add('show');
+    clearTimeout(osdTimer);
+    osdTimer = setTimeout(() => osdEl.classList.remove('show'), 1400);
+  }
+  let toastTimer;
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2000);
+  }
+  function notify(msg) {
+    if (modal.classList.contains('show') || !hasVideo()) toast(msg);
+    else osd(msg);
+  }
+  function flashCenter(name) {
+    setIcon(centerIcon, name);
+    centerIcon.classList.remove('pop');
+    void centerIcon.offsetWidth;
+    centerIcon.classList.add('pop');
+  }
+
+  let idleTimer;
+  function wake() {
+    stage.classList.remove('idle');
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      if (!video.paused && !dragging && !controls.matches(':hover')) stage.classList.add('idle');
+    }, 2500);
+  }
+
+  /* ================= Progress ================= */
+  let dragging = false;
+  let dragTime = 0;
+  let showRemaining = false;
+  let lastTimeText = '';
+
+  function updateProgress() {
+    const d = video.duration;
+    if (!isFinite(d) || d <= 0) {
+      playedEl.style.width = '0%';
+      thumbEl.style.left = '0%';
+      bufferedEl.style.width = '0%';
+      return;
+    }
+    const t = dragging ? dragTime : video.currentTime;
+    const p = t / d * 100;
+    playedEl.style.width = p + '%';
+    thumbEl.style.left = p + '%';
+
+    const b = video.buffered;
+    let end = 0;
+    for (let i = 0; i < b.length; i++) {
+      if (b.start(i) <= t && t <= b.end(i)) { end = b.end(i); break; }
+    }
+    bufferedEl.style.width = (end / d * 100) + '%';
+
+    const text = showRemaining ? `-${fmt(d - t)} / ${fmt(d)}` : `${fmt(t)} / ${fmt(d)}`;
+    if (text !== lastTimeText) { timeEl.textContent = text; lastTimeText = text; }
+  }
+
+  function tick() {
+    if (ab.a !== null && ab.b !== null && !video.paused && video.currentTime >= ab.b) {
+      video.currentTime = ab.a;
+    }
+    updateProgress();
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  const ratioFromEvent = e => {
+    const r = progress.getBoundingClientRect();
+    return clamp((e.clientX - r.left) / r.width, 0, 1);
+  };
+
+  progress.addEventListener('pointerdown', e => {
+    if (!isFinite(video.duration)) return;
+    dragging = true;
+    progress.setPointerCapture(e.pointerId);
+    progress.classList.add('dragging');
+    dragTime = ratioFromEvent(e) * video.duration;
+    video.currentTime = dragTime;
+  });
+  progress.addEventListener('pointermove', e => {
+    const d = video.duration;
+    if (!isFinite(d)) return;
+    const r = ratioFromEvent(e);
+    const w = progress.getBoundingClientRect().width;
+    hoverTimeEl.style.left = clamp(r * w, 30, w - 30) + 'px';
+    hoverTimeEl.textContent = fmt(r * d);
+    if (dragging) {
+      dragTime = r * d;
+      video.currentTime = dragTime;
+    }
+  });
+  const endDrag = () => {
+    if (!dragging) return;
+    dragging = false;
+    progress.classList.remove('dragging');
+    wake();
+  };
+  progress.addEventListener('pointerup', endDrag);
+  progress.addEventListener('pointercancel', endDrag);
+
+  timeEl.addEventListener('click', () => {
+    showRemaining = !showRemaining;
+    lastTimeText = '';
+  });
+
+  /* ================= Video events ================= */
+  video.addEventListener('loadedmetadata', () => {
+    const rate = S.general.rememberSpeed ? video.defaultPlaybackRate : 1;
+    video.playbackRate = rate;
+    if (S.general.rememberPosition && current >= 0) {
+      const p = positions[posKey(list[current])];
+      if (p && p > 5 && p < video.duration - 5) {
+        video.currentTime = p;
+        osd(`已從 ${fmt(p)} 繼續播放`);
+      }
+    }
+    ready = true;
+    lastTimeText = '';
+    updateBadges();
+  });
+
+  video.addEventListener('play', () => { setIcon(btn('btnPlay'), 'pause'); wake(); });
+  video.addEventListener('pause', () => {
+    setIcon(btn('btnPlay'), 'play');
+    stage.classList.remove('idle');
+    savePosition();
+  });
+  video.addEventListener('timeupdate', () => {
+    const now = Date.now();
+    if (now - lastSave > 3000) { lastSave = now; savePosition(); }
+  });
+  video.addEventListener('ended', () => {
+    savePosition();
+    renderPlaylist();
+    if (S.general.autoNext) playNext(true);
+  });
+  video.addEventListener('ratechange', () => {
+    const r = video.playbackRate;
+    const el = btn('btnSpeedVal');
+    el.textContent = r.toFixed(2) + 'x';
+    el.classList.toggle('changed', Math.abs(r - 1) > 0.001);
+  });
+  video.addEventListener('volumechange', () => {
+    const v = video.muted ? 0 : video.volume;
+    volumeEl.value = Math.round(v * 100);
+    volumeEl.style.setProperty('--p', (v * 100) + '%');
+    setIcon(btn('btnMute'), v === 0 ? 'mute' : 'volume');
+    try { localStorage.setItem(VOL_KEY, String(video.volume)); } catch (e) { /* ignore */ }
+  });
+  video.addEventListener('error', () => {
+    if (!video.getAttribute('src')) return;
+    osd('無法播放此檔案（格式或編碼不支援）');
+  });
+
+  let clickTimer;
+  video.addEventListener('click', () => {
+    clearTimeout(clickTimer);
+    clickTimer = setTimeout(togglePlay, 220);
+  });
+  video.addEventListener('dblclick', () => {
+    clearTimeout(clickTimer);
+    toggleFullscreen();
+  });
+
+  stage.addEventListener('mousemove', wake);
+  stage.addEventListener('mouseleave', () => {
+    if (!video.paused && !dragging) stage.classList.add('idle');
+  });
+  stage.addEventListener('wheel', e => {
+    if (!S.general.wheelVolume || !hasVideo()) return;
+    e.preventDefault();
+    changeVolume(e.deltaY < 0 ? S.values.volumeStep : -S.values.volumeStep);
+    wake();
+  }, { passive: false });
+
+  document.addEventListener('fullscreenchange', () => {
+    setIcon(btn('btnFs'), document.fullscreenElement ? 'fsExit' : 'fullscreen');
+    wake();
+  });
+
+  window.addEventListener('beforeunload', savePosition);
+
+  /* ================= Buttons ================= */
+  btn('btnPlay').addEventListener('click', togglePlay);
+  btn('btnPrev').addEventListener('click', playPrev);
+  btn('btnNext').addEventListener('click', () => playNext(false));
+  btn('btnBack').addEventListener('click', () => seek(-S.values.seekStep));
+  btn('btnFwd').addEventListener('click', () => seek(S.values.seekStep));
+  btn('btnMute').addEventListener('click', toggleMute);
+  btn('btnSpeedDown').addEventListener('click', () => setSpeed(video.playbackRate - S.values.speedStep));
+  btn('btnSpeedUp').addEventListener('click', () => setSpeed(video.playbackRate + S.values.speedStep));
+  btn('btnSpeedVal').addEventListener('click', () => setSpeed(1));
+  btn('btnLoop').addEventListener('click', toggleLoop);
+  btn('btnCC').addEventListener('click', toggleSubtitle);
+  btn('btnShot').addEventListener('click', screenshot);
+  btn('btnPip').addEventListener('click', togglePip);
+  btn('btnFs').addEventListener('click', toggleFullscreen);
+  btn('btnOpen').addEventListener('click', () => fileInput.click());
+  btn('btnPlaylist').addEventListener('click', togglePlaylist);
+  btn('btnSettings').addEventListener('click', openSettings);
+  btn('plAdd').addEventListener('click', () => fileInput.click());
+  btn('plClear').addEventListener('click', () => { if (list.length && confirm('確定要清空播放清單？')) clearAll(); });
+  $('#empty').addEventListener('click', () => fileInput.click());
+
+  volumeEl.addEventListener('input', () => {
+    video.volume = volumeEl.value / 100;
+    video.muted = Number(volumeEl.value) === 0;
+  });
+  volumeEl.addEventListener('pointerup', () => volumeEl.blur());
+
+  // 點擊後移除焦點，避免空白鍵觸發按鈕
+  document.addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (b && !b.closest('.modal')) b.blur();
+  });
+
+  fileInput.addEventListener('change', () => { addFiles(fileInput.files); fileInput.value = ''; });
+  subInput.addEventListener('change', () => { if (subInput.files[0]) loadSubtitle(subInput.files[0]); subInput.value = ''; });
+
+  /* ================= Drag & drop ================= */
+  let dragDepth = 0;
+  const hasFiles = e => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+  window.addEventListener('dragenter', e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth++;
+    document.body.classList.add('dragging');
+  });
+  window.addEventListener('dragover', e => { if (hasFiles(e)) e.preventDefault(); });
+  window.addEventListener('dragleave', e => {
+    if (!hasFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (!dragDepth) document.body.classList.remove('dragging');
+  });
+  window.addEventListener('drop', e => {
+    e.preventDefault();
+    dragDepth = 0;
+    document.body.classList.remove('dragging');
+    if (e.dataTransfer && e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+  });
+
+  /* ================= Tooltips ================= */
+  const TITLE_MAP = {
+    btnPlay: ['togglePlay', () => '播放 / 暫停'],
+    btnPrev: ['prev', () => '上一部'],
+    btnNext: ['next', () => '下一部'],
+    btnBack: ['seekBack', () => `倒退 ${S.values.seekStep} 秒`],
+    btnFwd: ['seekForward', () => `前進 ${S.values.seekStep} 秒`],
+    btnMute: ['mute', () => '靜音（滾輪可調整音量）'],
+    btnSpeedDown: ['speedDown', () => `減慢 ${S.values.speedStep}x`],
+    btnSpeedUp: ['speedUp', () => `加快 ${S.values.speedStep}x`],
+    btnSpeedVal: ['speedReset', () => '點擊重設為 1.00x'],
+    btnLoop: ['loop', () => '單曲循環'],
+    btnCC: ['subtitle', () => '字幕（未載入時開啟字幕檔）'],
+    btnShot: ['screenshot', () => '截圖'],
+    btnPip: ['pip', () => '子母畫面'],
+    btnFs: ['fullscreen', () => '全螢幕（雙擊畫面亦可）'],
+    btnOpen: ['openFile', () => '開啟檔案'],
+    btnPlaylist: ['playlist', () => '播放清單'],
+    btnSettings: ['settings', () => '設定與快捷鍵']
+  };
+  function updateTitles() {
+    for (const id in TITLE_MAP) {
+      const [actionId, label] = TITLE_MAP[id];
+      const k = S.keys[actionId];
+      btn(id).title = label() + (k ? `（${displayKey(k)}）` : '');
+    }
+    $('#hintKey').textContent = S.keys.settings ? displayKey(S.keys.settings) : '設定';
+  }
+
+  /* ================= Settings modal ================= */
+  function openSettings() {
+    if (document.fullscreenElement) document.exitFullscreen();
+    renderKeyList();
+    renderValues();
+    modal.classList.add('show');
+  }
+  function closeSettings() {
+    capturing = null;
+    modal.classList.remove('show');
+  }
+
+  function renderKeyList() {
+    let html = '';
+    let group = '';
+    for (const a of ACTIONS) {
+      if (a.group !== group) {
+        group = a.group;
+        html += `<div class="section-title">${group}</div>`;
+      }
+      const k = S.keys[a.id];
+      const isCap = capturing === a.id;
+      const text = isCap ? '請按下按鍵…' : (k ? esc(displayKey(k)) : '未設定');
+      html += `
+        <div class="key-row">
+          <div>${a.label}${a.sub ? `<span class="sub">${esc(a.sub())}</span>` : ''}</div>
+          <button class="kbd${k ? '' : ' empty'}${isCap ? ' capturing' : ''}" data-action="${a.id}">${text}</button>
+        </div>`;
+    }
+    keyList.innerHTML = html;
+  }
+
+  keyList.addEventListener('click', e => {
+    const b = e.target.closest('.kbd');
+    if (!b) return;
+    const id = b.dataset.action;
+    if (capturing === id) stopCapture();
+    else startCapture(id);
+  });
+
+  function renderValues() {
+    let html = '<div class="section-title">數值</div>';
+    html += VALUE_FIELDS.map(f => `
+      <div class="field">
+        <label for="f_${f.k}">${f.label}</label>
+        <div>
+          <input type="number" id="f_${f.k}" data-k="${f.k}" min="${f.min}" max="${f.max}" step="${f.step}" value="${S.values[f.k]}">
+          <span class="unit">${f.unit}</span>
+        </div>
+      </div>`).join('');
+    html += '<div class="section-title">一般</div>';
+    html += TOGGLES.map(t => `
+      <div class="field">
+        <span>${t.label}</span>
+        <label class="switch">
+          <input type="checkbox" data-g="${t.k}" ${S.general[t.k] ? 'checked' : ''}>
+          <span></span>
+        </label>
+      </div>`).join('');
+    valuesPanel.innerHTML = html;
+  }
+
+  valuesPanel.addEventListener('change', e => {
+    const el = e.target;
+    if (el.dataset.k) {
+      const k = el.dataset.k;
+      const f = VALUE_FIELDS.find(x => x.k === k);
+      const v = parseFloat(el.value);
+      if (isNaN(v) || v < f.min || v > f.max) {
+        el.value = S.values[k];
+        notify(`請輸入 ${f.min} ~ ${f.max} 之間的數值`);
+        return;
+      }
+      if ((k === 'minSpeed' && v >= S.values.maxSpeed) || (k === 'maxSpeed' && v <= S.values.minSpeed)) {
+        el.value = S.values[k];
+        notify('最低速度必須小於最高速度');
+        return;
+      }
+      S.values[k] = v;
+      if (k === 'minSpeed' || k === 'maxSpeed') setSpeed(video.playbackRate, true);
+    } else if (el.dataset.g) {
+      S.general[el.dataset.g] = el.checked;
+      if (el.dataset.g === 'rememberPosition') renderPlaylist();
+    }
+    saveSettings();
+    renderKeyList();
+  });
+
+  modal.querySelectorAll('.tabs button').forEach(b => {
+    b.addEventListener('click', () => {
+      modal.querySelectorAll('.tabs button').forEach(x => x.classList.toggle('active', x === b));
+      modal.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === b.dataset.tab));
+      stopCapture();
+    });
+  });
+
+  modal.addEventListener('mousedown', e => { if (e.target === modal) closeSettings(); });
+  btn('btnClose').addEventListener('click', closeSettings);
+  btn('btnDone').addEventListener('click', closeSettings);
+
+  btn('btnReset').addEventListener('click', () => {
+    if (!confirm('確定要將所有快捷鍵與設定恢復為預設值？')) return;
+    S = defaults();
+    saveSettings();
+    setSpeed(video.playbackRate, true);
+    renderKeyList();
+    renderValues();
+    toast('已恢復預設設定');
+  });
+
+  btn('btnExport').addEventListener('click', () => {
+    const blob = new Blob([JSON.stringify(S, null, 2)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'player-settings.json';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  });
+
+  btn('btnImport').addEventListener('click', () => importInput.click());
+  importInput.addEventListener('change', async () => {
+    const f = importInput.files[0];
+    importInput.value = '';
+    if (!f) return;
+    try {
+      const data = JSON.parse(await f.text());
+      S = merge(defaults(), data);
+      saveSettings();
+      renderKeyList();
+      renderValues();
+      toast('已匯入設定');
+    } catch (e) {
+      toast('匯入失敗：檔案格式錯誤');
+    }
+  });
+
+  /* ================= Init ================= */
+  const savedVol = parseFloat(localStorage.getItem(VOL_KEY));
+  if (!isNaN(savedVol)) video.volume = clamp(savedVol, 0, 1);
+  video.dispatchEvent(new Event('volumechange'));
+  rebuildKeyMap();
+  updateTitles();
+  renderPlaylist();
+})();
+</script>
+</body>
+</html>
